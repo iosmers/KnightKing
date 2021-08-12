@@ -88,11 +88,13 @@ int main(int argc, char** argv)
     {
         WalkEngine<real_t, Node2vecState> graph;
         run(&graph, &opt);
-    } else if(opt.static_comp.compare("unweighted") == 0)
-    {
-        WalkEngine<EmptyData, Node2vecState> graph;
-        run(&graph, &opt);
-    } else
+    } 
+    // else if(opt.static_comp.compare("unweighted") == 0)
+    // {
+    //     WalkEngine<EmptyData, Node2vecState> graph;
+    //     run(&graph, &opt);
+    // } 
+    else
     {
         exit(1);
     }

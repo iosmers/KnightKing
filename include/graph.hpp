@@ -324,7 +324,9 @@ public:
             ep->neighbour = e.dst;
             if (!std::is_same<edge_data_t, EmptyData>::value)
             {
-                ep->data = e.data;
+                // ep->data = e.data; 
+                // add weighted for node2vec
+                ep->data = 1.0;
             }
         }
     }
