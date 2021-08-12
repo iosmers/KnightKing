@@ -25,7 +25,6 @@
 #include "walk.hpp"
 #include "option_helper.hpp"
 #include "node2vec.hpp"
-
 class Node2vecOptionHelper : public STruncatedRandomWalkOptionHelper
 {
 private:
@@ -84,6 +83,7 @@ int main(int argc, char** argv)
     opt.parse(argc, argv);
 
     puts(opt.static_comp.c_str());
+    Timer timer;
     if (opt.static_comp.compare("weighted") == 0)
     {
         WalkEngine<real_t, Node2vecState> graph;
@@ -96,5 +96,7 @@ int main(int argc, char** argv)
     {
         exit(1);
     }
+    double sum_time = timer.duration();
+    printf("[运行时间yw:] %lf \n", timer.duration());
     return 0;
 }
