@@ -58,7 +58,7 @@ int main(int argc, char** argv)
     {
         walker.data.last_vertex = current_v;
     };
-    WalkerConfig<real_t, WalkState> walker_conf(34, init_walker_func, update_walker_func);
+    WalkerConfig<real_t, WalkState> walker_conf(opt.walker_num, init_walker_func, update_walker_func);
 
     auto extension_comp = [&] (Walker<WalkState>& walker, vertex_id_t current_v)
     {
@@ -81,7 +81,7 @@ int main(int argc, char** argv)
         } else
         {
             /*if not return edge*/
-            return 1.0;
+            return 0.5;
         }
     };
     auto dynamic_comp_upperbound = [&] (vertex_id_t v_id, AdjList<real_t> *adj_lists)

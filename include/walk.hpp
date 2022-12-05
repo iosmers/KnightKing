@@ -24,10 +24,13 @@
 
 #pragma once
 
+#include <iostream>
+
 #include "type.hpp"
 #include "graph.hpp"
 #include "path.hpp"
 
+using namespace std;
 template<typename walker_data_t>
 struct Walker
 {
@@ -35,6 +38,7 @@ public:
     walker_id_t id;
     step_t step;
     walker_data_t data;
+    size_t previous_node;
 };
 
 template<>
@@ -366,7 +370,13 @@ template<typename edge_data_t, typename walker_data_t>
 class WalkEngine : public GraphEngine<edge_data_t>
 {
     StdRandNumGenerator* randgen;
-
+    size_t cross_num = 0;
+    size_t intra_num = 0;
+    size_t trace_num = 0;
+    size_t local_query = 0;
+    size_t remote_query = 0;
+    vector<size_t> query_freq;
+    vector<vector<pair<size_t, size_t>>>  query_freq_per_iter;
 #ifdef COLLECT_WALK_SEQUENCE
     std::vector<std::vector<Footprint> > footprints;
 #endif
@@ -378,6 +388,7 @@ public:
     WalkEngine()
     {
         randgen = new StdRandNumGenerator[this->worker_num];
+        query_freq.resize(this->v_num);
     }
 
     ~WalkEngine()
@@ -385,6 +396,28 @@ public:
         if (randgen != nullptr)
         {
             delete []randgen;
+        }
+        size_t glb_cross;
+        MPI_Allreduce(&this->cross_num, &glb_cross, 1, get_mpi_data_type<size_t>(), MPI_SUM, MPI_COMM_WORLD);
+        size_t glb_intra;
+        MPI_Allreduce(&this->intra_num, &glb_intra, 1, get_mpi_data_type<size_t>(), MPI_SUM, MPI_COMM_WORLD);
+
+        size_t glb_local_query = 0; 
+        size_t glb_remote_query = 0;
+        MPI_Allreduce(&this->local_query, &glb_local_query, 1, get_mpi_data_type<size_t>(), MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&this->remote_query, &glb_remote_query, 1, get_mpi_data_type<size_t>(), MPI_SUM, MPI_COMM_WORLD);
+        // size_t glb_trace;
+        // MPI_Allreduce(&this->trace_num, &glb_trace, 1, get_mpi_data_type<size_t>(), MPI_SUM, MPI_COMM_WORLD);
+        // size_t glb_p_step;
+        // MPI_Allreduce(&this->p_step, &glb_p_step, 1, get_mpi_data_type<size_t>(), MPI_SUM, MPI_COMM_WORLD);
+        // printf("[p%u]【sum_p_step】 %zu 【sum cross】 %zu 【sum intr】 %zu 【sum_trace】 %zu cross_num %zu intr_num %zu  trace_num %zu p_step_num %zu\n",this->local_partition_id, glb_p_step, glb_cross, glb_intr, glb_trace, cross_num, intr_num, trace_num, p_step);
+        // printf("[p%u]【sum cross】 %zu 【sum intr】 %zu  cross_num %zu intr_num %zu  \n",this->local_partition_id, glb_cross, glb_intra, cross_num, intra_num);
+        printf("[p%u] [local_query] %zu [remote_query] %zu [sum_local_query] %zu [sum_remote_query] %zu\n ", this->local_partition_id, local_query, remote_query, glb_local_query, glb_remote_query);
+        for(int i=0; i<query_freq_per_iter.size(); i++){
+            for(int j=0; j<query_freq_per_iter[i].size(); j++){
+                cout << query_freq_per_iter[i][j].first << " : " << query_freq_per_iter[i][j].second << " "; 
+            }
+            cout << endl;
         }
     }
 
@@ -822,7 +855,7 @@ public:
             }
 
             internal_walk_epoch(&walk_data, walker_config, transition_config);
-
+            walk_data.collect_path_flag = true;
             if (walk_data.collect_path_flag)
             {
                 auto* paths = walk_data.pc->assemble_path(walker_begin);
@@ -923,6 +956,7 @@ public:
 
         auto active_walker_num = walk_data->active_walker_num;    
         int super_step = 0;
+        Timer walk_time;
         while (active_walker_num != 0)
         {
             #ifndef UNIT_TEST
@@ -1029,6 +1063,10 @@ public:
                                         }
                                         if (dynamic_comp_func)
                                         {
+                                            // bool isNeighbor = std::binary_search(adj_list->begin, adj_list->end, target, [](const AdjUnit<edge_data_t> &a, const AdjUnit<edge_data_t> &b) { return a.neighbour < b.neighbour; });
+                                            // if(walker.previous_node != candidate->neighbour){
+                                                
+                                            // }
                                             real_t dart_height = gen->gen_float(dcomp_upperbound[current_v]);
                                             if ((dcomp_lowerbound != nullptr && dart_height <= dcomp_lowerbound[current_v]) || dart_height <= dynamic_comp_func(walker, current_v, candidate))
                                             {
@@ -1044,6 +1082,7 @@ public:
                                     if (walker_update_state_func != nullptr)
                                     {
                                         walker_update_state_func(walker, current_v, ac_edge);
+                                        // walker.previous_node = current_v;
                                     }
 
                                     if (output_flag)
@@ -1056,8 +1095,10 @@ public:
                                     if (this->is_local_vertex(ac_edge->neighbour))
                                     {
                                         current_v = ac_edge->neighbour;
+                                        // __sync_fetch_and_add(&intra_num, 1);
                                     } else
                                     {
+                                        // __sync_fetch_and_add(&cross_num, 1);
                                         this->emit(ac_edge->neighbour, walker, worker_id);
                                         break;
                                     }
@@ -1077,8 +1118,10 @@ public:
                 active_walker_num >= PHASED_EXECTION_THRESHOLD * this->partition_num
             );
         }
+        double walk_time_per_node = walk_time.duration();
+        cout << " node walk time = " << walk_time_per_node << std::endl;
     }
-
+// 二阶游走所需要的函数
     template<typename query_data_t, typename response_data_t>
     void internal_walk_epoch(
         InternalWalkData<query_data_t, response_data_t> *walk_data,
@@ -1123,6 +1166,7 @@ public:
 
         walker_id_t active_walker_num = walk_data->active_walker_num;    
         int super_step = 0;
+        Timer walk_time;
         while (active_walker_num != 0)
         {
             #ifndef UNIT_TEST
@@ -1132,6 +1176,7 @@ public:
             }
             #endif
             bool use_parallel = (active_walker_num >= OMP_PARALLEL_THRESHOLD);
+            // 查询
             this->template distributed_execute<query_t>(
                 [&] (void) {
                     walker_id_t progress = 0;
@@ -1150,6 +1195,7 @@ public:
                             for (auto *p = begin; p != end; p++)
                             {
                                 walker_id_t walker_idx = p - local_walkers;
+                                // cd for candidate
                                 auto *cd = &remote_fetch_candidate[walker_idx];
                                 bool local_cal = true;
                                 while (local_cal)
@@ -1178,40 +1224,45 @@ public:
                                             AdjList<edge_data_t> *adj = this->csr->adj_lists + current_v;
                                             vertex_id_t degree = this->vertex_out_degree[current_v];
                                             bool in_appendix_area = false;
-                                            if (outlier_opt_flag)
-                                            {
-                                                real_t outlier_overflow_upperbound;
-                                                vertex_id_t outlier_num_upperbound;
-                                                outlier_upperbound_func(p->data, current_v, adj, outlier_overflow_upperbound, outlier_num_upperbound);
-                                                if (outlier_overflow_upperbound > 0 && outlier_num_upperbound > 0)
-                                                {
-                                                    real_t randval = randgen[worker_id].gen_float(outlier_overflow_upperbound * outlier_num_upperbound + regular_area[current_v]) - regular_area[current_v];
-                                                    if (randval > 0)
-                                                    {
-                                                        in_appendix_area = true;
-                                                        vertex_id_t outlier_idx = randval / outlier_overflow_upperbound;
-                                                        if (outlier_idx + 1 > outlier_num_upperbound)
-                                                        {
-                                                            //in case of round-off error
-                                                            outlier_idx = outlier_num_upperbound - 1;
-                                                        }
-                                                        cd->candidate = outlier_search_func(p->data, current_v, adj, outlier_idx);
-                                                        if (cd->candidate != nullptr)
-                                                        {
-                                                            real_t outlier_static_comp =  static_comp_func ? static_comp_func(current_v, cd->candidate) : 1.0;
-                                                            cd->randval = (randval - outlier_idx * outlier_overflow_upperbound) / outlier_static_comp + dcomp_upperbound[current_v];
-                                                            post_query_func(p->data, walker_idx, current_v, cd->candidate);
-                                                            local_cal = false;
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                            // outlier_opt_flag = false;
+                                            // if (outlier_opt_flag)
+                                            // {
+                                            //     real_t outlier_overflow_upperbound;
+                                            //     vertex_id_t outlier_num_upperbound;
+                                            //     outlier_upperbound_func(p->data, current_v, adj, outlier_overflow_upperbound, outlier_num_upperbound);
+                                            //     if (outlier_overflow_upperbound > 0 && outlier_num_upperbound > 0)
+                                            //     {
+                                            //         real_t randval = randgen[worker_id].gen_float(outlier_overflow_upperbound * outlier_num_upperbound + regular_area[current_v]) - regular_area[current_v];
+                                            //         if (randval > 0)
+                                            //         {
+                                            //             in_appendix_area = true;
+                                            //             vertex_id_t outlier_idx = randval / outlier_overflow_upperbound;
+                                            //             if (outlier_idx + 1 > outlier_num_upperbound)
+                                            //             {
+                                            //                 //in case of round-off error
+                                            //                 outlier_idx = outlier_num_upperbound - 1;
+                                            //             }
+                                            //             cd->candidate = outlier_search_func(p->data, current_v, adj, outlier_idx);
+                                            //             if (cd->candidate != nullptr)
+                                            //             {
+                                            //                 real_t outlier_static_comp =  static_comp_func ? static_comp_func(current_v, cd->candidate) : 1.0;
+                                            //                 cd->randval = (randval - outlier_idx * outlier_overflow_upperbound) / outlier_static_comp + dcomp_upperbound[current_v];
+                                            //                 // __sync_fetch_and_add(&cross_num, 1);
+                                            //                 post_query_func(p->data, walker_idx, current_v, cd->candidate);
+                                            //                 local_cal = false;
+                                            //             }
+                                            //         }
+                                            //     }
+                                            // }
                                             if (!in_appendix_area)
                                             {
                                                 if (alias_tables == nullptr)
                                                 {
                                                     cd->candidate = adj->begin + randgen[worker_id].gen(degree);
-                                                } else
+                                                    // if(this->is_local_vertex(cd->candidate->neighbour)){
+                                                    //     local_cal = false;
+                                                    // }
+                                                } else // 这段代码用不到
                                                 {
                                                     AliasBucket<edge_data_t>* bucket = alias_tables->index[current_v] + randgen[worker_id].gen(degree);
                                                     if (bucket->q_ptr == nullptr || randgen[worker_id].gen_float(1.0) < bucket->p)
@@ -1223,14 +1274,37 @@ public:
                                                     }
                                                 }
                                                 cd->randval = randgen[worker_id].gen_float(dcomp_upperbound[current_v]);
-                                                if (dcomp_lowerbound != nullptr && cd->randval <= dcomp_lowerbound[current_v])
-                                                {
-                                                    cd->accepted = true;
-                                                } else
-                                                {
+                                                // ////////////////////////下面这一段是我改的//////////////////////////
+                                                if(this->is_local_vertex(p->data.data.previous_vertex)){
+                                                    AdjList<edge_data_t> *adj_list = this->csr->adj_lists + p->data.data.previous_vertex;
+                                                    AdjUnit<edge_data_t> target;
+                                                    target.neighbour = cd->candidate->neighbour;
+                                                    stateResponse<bool> response;
+                                                    response.walker_idx = walker_idx;
+                                                    response.data = std::binary_search(adj_list->begin, adj_list->end, target, [](const AdjUnit<edge_data_t>& a, const AdjUnit<edge_data_t>& b) { return a.neighbour < b.neighbour; });
+                                                    remote_response_cache[walker_idx] = response;
+                                                    local_cal = false;
+                                                }else{
                                                     post_query_func(p->data, walker_idx, current_v, cd->candidate);
                                                     local_cal = false;
                                                 }
+                                                ////////////////////////////////////////////////////////////////////
+                                                // dcomp_lowerbound = nullptr;
+                                                // if ((dcomp_lowerbound != nullptr && cd->randval <= dcomp_lowerbound[current_v]))
+                                                // {
+                                                //     cd->accepted = true;
+                                                // } else
+                                                // {
+                                                //     // __sync_fetch_and_add(&cross_num, 1);
+                                                //     // if(this->is_local_vertex(p->data.data.previous_vertex)){
+                                                //     //     __sync_fetch_and_add(&local_query, 1);
+                                                //     // }else{
+                                                //     //     __sync_fetch_and_add(&remote_query, 1);
+                                                //     //     // __sync_fetch_and_add(&this->query_freq[p->data.data.previous_vertex],1);
+                                                //     // }
+                                                //     post_query_func(p->data, walker_idx, current_v, cd->candidate);
+                                                //     local_cal = false;
+                                                // }
                                             }
 
                                             if (cd->accepted == true)
@@ -1238,6 +1312,7 @@ public:
                                                 if (this->is_local_vertex(cd->candidate->neighbour))
                                                 {
                                                     p->data.step ++;
+                                                    // __sync_fetch_and_add(&intra_num, 1);
                                                     walker_update_state_func(p->data, current_v, cd->candidate);
                                                     p->dst_vertex_id = cd->candidate->neighbour;
 
@@ -1273,10 +1348,21 @@ public:
                 cached_request,
                 active_walker_num >= PHASED_EXECTION_THRESHOLD * this->partition_num
             );
+            // vector<pair<size_t, size_t>> sort_freq(this->v_num);
+            // for(int i=0; i<this->v_num; i++){
+            //     sort_freq[i].first = i;
+            //     sort_freq[i].second = this->query_freq[i];
+            // }
+            // auto cmp = [](pair<size_t, size_t> p1, pair<size_t, size_t> p2){
+            //     return p1.second > p2.second;
+            // };
+            // sort(sort_freq.begin(), sort_freq.end(), cmp);
+            // query_freq_per_iter.push_back(sort_freq);
 
             this->template distributed_execute<response_t>(
                 [&] (void) {
                     walker_id_t progress = 0;
+                    // 收到别的机器的request的请求
                     walker_id_t data_amount = cached_request_end - cached_request;
                     auto *data_begin = cached_request;
                     const walker_id_t work_step_length = PARALLEL_CHUNK_SIZE;
@@ -1292,6 +1378,7 @@ public:
                             {
                                 vertex_id_t current_v = p->dst_vertex_id;
                                 auto *adj_list = this->csr->adj_lists + current_v;
+                                // 回应查询
                                 respond_query_func(current_v, p->data, adj_list);
                             }
                             this->notify_progress(begin - data_begin, end - data_begin, data_amount, active_walker_num >= PHASED_EXECTION_THRESHOLD * this->partition_num);
@@ -1301,6 +1388,7 @@ public:
                 [&] (Message<response_t> *msg_begin, Message<response_t> *msg_end)
                 {
                     walker_id_t progress = 0;
+                    //收到别人给他的回复
                     walker_id_t data_amount = msg_end - msg_begin;
                     auto *data_begin = msg_begin;
                     const walker_id_t work_step_length = PARALLEL_CHUNK_SIZE;
@@ -1345,10 +1433,12 @@ public:
                                 auto *cd = &remote_fetch_candidate[walker_idx];
                                 if (cd->candidate != nullptr)
                                 {
+                                    // 随机生成的随机数
                                     if (cd->accepted || cd->randval <= dynamic_comp_func(walker, remote_response_cache[walker_idx], current_v, cd->candidate))
                                     {
                                         walker.step ++;
                                         walker_update_state_func(walker, current_v, cd->candidate);
+                                        // 又做一次shuffle
                                         this->emit(cd->candidate->neighbour, walker, worker_id);
 
                                         if (output_flag)
@@ -1378,6 +1468,9 @@ public:
                 active_walker_num >= PHASED_EXECTION_THRESHOLD * this->partition_num
             );
         }
+        
+        double walk_time_per_node = walk_time.duration();
+        cout << " node walk time = " << walk_time_per_node << std::endl;
     }
 
 #ifdef COLLECT_WALK_SEQUENCE

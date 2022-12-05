@@ -154,13 +154,14 @@ void node2vec(WalkEngine<edge_data_t, Node2vecState> *graph, Node2vecConf conf, 
                 query.data = edge->neighbour;
                 graph->emit(walker.data.previous_vertex, query);
             }
-        },
+        }, // response_query
         [&] (vertex_id_t vtx, stateQuery<vertex_id_t> query, AdjList<edge_data_t>* adj_list)
         {
             stateResponse<bool> response;
             response.walker_idx = query.walker_idx;
             AdjUnit<edge_data_t> target;
             target.neighbour = query.data;
+            // 查询的值就是当前搜不搜得到这个值
             response.data = std::binary_search(adj_list->begin, adj_list->end, target, [](const AdjUnit<edge_data_t> &a, const AdjUnit<edge_data_t> &b) { return a.neighbour < b.neighbour; });
             graph->emit(query.src_v, response);
         },
